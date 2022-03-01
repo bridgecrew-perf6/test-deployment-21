@@ -1,34 +1,58 @@
-FROM registry.access.redhat.com/ubi8/python-38
+FROM quay.io/centos7/s2i-core-centos7
 
-# Add application sources with correct permissions for OpenShift
-USER 0
-ADD crawler .
+ENV SUMMARY="MongoDB NoSQL database server" \
+    DESCRIPTION="MongoDB (from humongous) is a free and open-source \
+cross-platform document-oriented database program. Classified as a NoSQL \
+database program, MongoDB uses JSON-like documents with schemas. This \
+container image contains programs to run mongod server."
 
-# Install Libpostal dependencies
-RUN yum update -y && \
-    yum -y install curl autoconf automake libtool python3-devel pkgconfig
+LABEL summary="$SUMMARY" \
+      description="$DESCRIPTION" \
+      io.k8s.description="$DESCRIPTION" \
+      io.k8s.display-name="MongoDB 3.6" \
+      io.openshift.expose-services="27017:mongodb" \
+      io.openshift.tags="database,mongodb,rh-mongodb36" \
+      com.redhat.component="rh-mongodb36-container" \
+      name="centos7/mongodb-36-centos7" \
+      usage="docker run -d -e MONGODB_ADMIN_PASSWORD=my_pass quay.io/centos7/mongodb-36-centos7" \
+      version="1" \
+      maintainer="SoftwareCollections.org <sclorg@redhat.com>"
 
+ENV MONGODB_VERSION=3.6 \
+    # Set paths to avoid hard-coding them in scripts.
+    APP_DATA=/opt/app-root/src \
+    HOME=/var/lib/mongodb \
+    CONTAINER_SCRIPTS_PATH=/usr/share/container-scripts/mongodb \
+    # Incantations to enable Software Collections on `bash` and `sh -i`.
+    ENABLED_COLLECTIONS=rh-mongodb36 \
+    BASH_ENV="\${CONTAINER_SCRIPTS_PATH}/scl_enable" \
+    ENV="\${CONTAINER_SCRIPTS_PATH}/scl_enable" \
+    PROMPT_COMMAND=". \${CONTAINER_SCRIPTS_PATH}/scl_enable"
 
-# Download libpostal source to /usr/local/libpostal-1.1-alpha
-RUN cd /usr/local && curl -sL https://github.com/openvenues/libpostal/archive/v1.1-alpha.tar.gz | tar -xz
+EXPOSE 27017
 
-# Create Libpostal data directory at /var/libpostal/data
-RUN cd /var && \
-	mkdir libpostal && \
-	cd libpostal && \
-	mkdir data
+ENTRYPOINT ["container-entrypoint"]
+CMD ["run-mongod"]
 
-# Install Libpostal from source
-RUN cd /usr/local/libpostal-1.1-alpha && \
-	./bootstrap.sh && \
-	./configure --datadir=/var/libpostal/data && \
-	make -j4 && \
-	make install && \
-	ldconfig
+RUN yum install -y centos-release-scl && \
+    INSTALL_PKGS="bind-utils gettext iproute rsync tar rh-mongodb36-mongodb rh-mongodb36 rh-mongodb36-mongo-tools rh-mongodb36-syspaths groff-base" && \
+    yum install -y --setopt=tsflags=nodocs $INSTALL_PKGS && \
+    rpm -V $INSTALL_PKGS && \
+    yum -y clean all --enablerepo='*'
 
-RUN chown -R 1001:0 ./
-USER 1001
+COPY s2i/bin/ $STI_SCRIPTS_PATH
 
-# Install Python dependencies
-RUN pip install -U "pip>=19.3.1" && \
-    pip install -r requirements.txt
+COPY root /
+
+# Container setup
+RUN : > /etc/mongod.conf && \
+    mkdir -p ${HOME}/data && \
+    # Set owner 'mongodb:0' and 'g+rw(x)' permission - to avoid problems running container with arbitrary UID
+    /usr/libexec/fix-permissions /etc/mongod.conf ${CONTAINER_SCRIPTS_PATH}/mongod.conf.template \
+    ${HOME} ${APP_DATA}/.. && \
+    usermod -a -G root mongodb && \
+    rpm-file-permissions
+
+VOLUME ["/var/lib/mongodb/data"]
+
+USER 184
